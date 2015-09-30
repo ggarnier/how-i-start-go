@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -48,6 +49,8 @@ type weatherProvider interface {
 type multiWeatherProvider []weatherProvider
 
 func (w multiWeatherProvider) temperature(city string) (float64, error) {
+	timeoutMilliseconds := 500
+
 	// Make a channel for temperatures, and a channel for errors.
 	// Each provider will push a value into only one.
 	temps := make(chan float64, len(w))
@@ -67,6 +70,7 @@ func (w multiWeatherProvider) temperature(city string) (float64, error) {
 	}
 
 	sum := 0.0
+	size := len(w)
 
 	// Collect a temperature or an error from each provider.
 	for i := 0; i < len(w); i++ {
@@ -75,17 +79,26 @@ func (w multiWeatherProvider) temperature(city string) (float64, error) {
 			sum += temp
 		case err := <-errs:
 			return 0, err
+		case <-time.After(time.Duration(timeoutMilliseconds) * time.Millisecond):
+			log.Println("timeout")
+			size = size - 1
 		}
 	}
 
+	if size == 0 {
+		return 0, fmt.Errorf("no API responded in less than %d ms", timeoutMilliseconds)
+	}
+
 	// Return the average, same as before.
-	return sum / float64(len(w)), nil
+	return sum / float64(size), nil
 }
 
 type openWeatherMap struct{}
 
 func (w openWeatherMap) temperature(city string) (float64, error) {
+	begin := time.Now()
 	resp, err := http.Get("http://api.openweathermap.org/data/2.5/weather?q=" + city)
+	log.Printf("openWeatherMap took %s", time.Since(begin).String())
 	if err != nil {
 		return 0, err
 	}
@@ -111,7 +124,9 @@ type weatherUnderground struct {
 }
 
 func (w weatherUnderground) temperature(city string) (float64, error) {
+	begin := time.Now()
 	resp, err := http.Get("http://api.wunderground.com/api/" + w.apiKey + "/conditions/q/" + city + ".json")
+	log.Printf("weatherUnderground took %s", time.Since(begin).String())
 	if err != nil {
 		return 0, err
 	}
@@ -136,7 +151,9 @@ func (w weatherUnderground) temperature(city string) (float64, error) {
 type yahooWeather struct{}
 
 func (w yahooWeather) temperature(city string) (float64, error) {
+	begin := time.Now()
 	resp, err := http.Get("https://query.yahooapis.com/v1/public/yql?q=select%20*%20from%20weather.forecast%20where%20woeid%20in%20(select%20woeid%20from%20geo.places(1)%20where%20text%3D%22" + city + "%22)&format=json&env=store%3A%2F%2Fdatatables.org%2Falltableswithkeys")
+	log.Printf("yahooWeather took %s", time.Since(begin).String())
 	if err != nil {
 		return 0, err
 	}
